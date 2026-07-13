@@ -1539,8 +1539,8 @@
       <button class="generate-btn" id="generateBtn" type="button">
         Shareable text
       </button>
-      <button class="generate-btn secondary" id="downloadCsvBtn" type="button">
-        Download .csv
+      <button class="generate-btn secondary" id="downloadXlsxBtn" type="button">
+        Download Excel
       </button>
     </div>
   </aside>
@@ -3015,17 +3015,9 @@
   const modalTitle = document.getElementById("modalTitle");
   const modalNote = document.getElementById("modalNote");
 
-  document.getElementById("downloadCsvBtn").addEventListener("click", () => {
-    tryFileDownload();
-    modalTitle.textContent = "CSV itinerary";
-    modalNote.style.display = "block";
-    modalNote.textContent =
-      "A file download was attempted, but some hosting environments block it silently. Guaranteed path: copy the text below and paste it directly into a new sheet in Excel or Google Sheets — it auto-splits into columns.";
-    shareOutput.value = buildCSV();
-    modalOverlay.classList.add("open");
-    shareOutput.focus();
-    shareOutput.setSelectionRange(0, 0);
-  });
+  document
+    .getElementById("downloadXlsxBtn")
+    .addEventListener("click", () => downloadExcel(true));
 
   document.getElementById("generateBtn").addEventListener("click", () => {
     modalTitle.textContent = "Shareable itinerary";
@@ -4043,7 +4035,7 @@
     );
   }
 
-  function buildExcelWorkbook() {
+  function buildExcelWorkbook(forceBudget) {
     const s = window.__state;
     const days = assembleItinDays(s);
     const cur = toDate(TRIP_START);
@@ -4103,8 +4095,8 @@
       { name: "Itinerary", rows: itinRows, cols: [16, 8, 46, 30, 40] },
     ];
 
-    // --- Optional Budget sheet (only when prices are shown) ---
-    if (SHOW_PRICES) {
+    // --- Budget sheet: when prices are shown, or forced (Plan-tab export) ---
+    if (SHOW_PRICES || forceBudget) {
       const rows = buildRows();
       const bud = [
         [
@@ -4178,7 +4170,7 @@
     return buildXlsx(sheets);
   }
 
-  function downloadExcel() {
+  function downloadExcel(forceBudget) {
     let embedded = false;
     try {
       embedded = window.self !== window.top;
@@ -4186,13 +4178,19 @@
       embedded = true;
     }
     if (embedded) {
-      const hint = document.getElementById("pdfHint");
-      hint.textContent =
-        "Excel download is blocked inside this embedded preview. Open the itinerary at its own web address to download the .xlsx.";
-      hint.style.display = "";
+      // Sandboxed previews block binary downloads — fall back to the
+      // guaranteed copy-paste path via the modal (works on either tab).
+      modalTitle.textContent = "Copy this into a spreadsheet";
+      modalNote.style.display = "block";
+      modalNote.textContent =
+        "This embedded preview blocks file downloads. Open the site at its own web address to get the real .xlsx — or copy the text below into Excel / Google Sheets (it auto-splits into columns).";
+      shareOutput.value = buildCSV();
+      modalOverlay.classList.add("open");
+      shareOutput.focus();
+      shareOutput.setSelectionRange(0, 0);
       return;
     }
-    const data = buildExcelWorkbook();
+    const data = buildExcelWorkbook(forceBudget);
     const blob = new Blob([data], {
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     });
@@ -4300,7 +4298,7 @@
       });
     document
       .getElementById("itinXlsxBtn")
-      .addEventListener("click", downloadExcel);
+      .addEventListener("click", () => downloadExcel(false));
     // keep the itinerary in sync with every Plan-tab change
     document.addEventListener("change", renderItinerary);
     document
