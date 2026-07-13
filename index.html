@@ -1623,6 +1623,14 @@
     >
       Copy as text
     </button>
+    <button
+      class="generate-btn secondary"
+      id="itinXlsxBtn"
+      type="button"
+      style="flex: 0 0 auto"
+    >
+      Download Excel
+    </button>
     <span
       class="no-print"
       id="pdfHint"
@@ -3705,6 +3713,460 @@
     return out.join("\n");
   }
 
+  /* ============================================================
+     EXCEL (.xlsx) EXPORT — dependency-free. Builds a real
+     multi-sheet workbook (OOXML zipped by hand, no libraries) so
+     it stays self-contained. Sheet 1 = itinerary; Budget sheet
+     when prices are shown; final sheet = the Japan MOFA visa
+     "Travel Itinerary" form, pre-filled from the trip.
+     ============================================================ */
+
+  // Officer-friendly, literal one-liners for the visa form (the
+  // itinerary's own titles are deliberately poetic — wrong register here).
+  const VISA_PLAN = {
+    "t-arrive": "Arrive in Tokyo; check in and rest.",
+    "t-tsukiji": "Tsukiji Outer Market; Asakusa Senso-ji Temple & Nakamise St.",
+    "t-gyoen": "Shinjuku Gyoen National Garden; Shinjuku district.",
+    "t-daytrip": "Day trip to Kamakura (Great Buddha, Hase-dera Temple).",
+    "h-arrive":
+      "Travel to Hakone; Hakone Open-Air Museum; onsen (hot spring) ryokan.",
+    "h-full": "Hakone loop — Lake Ashi, Owakudani, Hakone Shrine.",
+    "k-arrive":
+      "Travel to Kyoto by Shinkansen; Higashiyama & Kiyomizu-dera Temple.",
+    "k-fushimi": "Fushimi Inari Shrine; evening in Pontocho.",
+    "k-arashiyama": "Arashiyama bamboo grove & Tenryu-ji Temple.",
+    "k-foliage":
+      "Kinkaku-ji (Golden Pavilion) & Ryoan-ji; autumn foliage viewing.",
+    "o-arrive": "Travel to Osaka; Dotonbori & Namba.",
+    depart: "Depart from Kansai International Airport.",
+  };
+
+  function xlEsc(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+  function xlCol(n) {
+    let s = "";
+    n++;
+    while (n > 0) {
+      const m = (n - 1) % 26;
+      s = String.fromCharCode(65 + m) + s;
+      n = Math.floor((n - 1) / 26);
+    }
+    return s;
+  }
+  function xlCrc32(buf) {
+    if (!xlCrc32.t) {
+      xlCrc32.t = [];
+      for (let n = 0; n < 256; n++) {
+        let c = n;
+        for (let k = 0; k < 8; k++)
+          c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+        xlCrc32.t[n] = c >>> 0;
+      }
+    }
+    const t = xlCrc32.t;
+    let crc = 0xffffffff;
+    for (let i = 0; i < buf.length; i++)
+      crc = (crc >>> 8) ^ t[(crc ^ buf[i]) & 0xff];
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+  function xlZip(files) {
+    const u16 = (n) => [n & 255, (n >> 8) & 255];
+    const u32 = (n) => [
+      n & 255,
+      (n >> 8) & 255,
+      (n >> 16) & 255,
+      (n >> 24) & 255,
+    ];
+    const enc = new TextEncoder();
+    const parts = [];
+    const central = [];
+    let offset = 0;
+    files.forEach((f) => {
+      const nameB = enc.encode(f.name);
+      const data = f.data;
+      const crc = xlCrc32(data);
+      const local = [].concat(
+        u32(0x04034b50),
+        u16(20),
+        u16(0),
+        u16(0),
+        u16(0),
+        u16(0),
+        u32(crc),
+        u32(data.length),
+        u32(data.length),
+        u16(nameB.length),
+        u16(0),
+      );
+      parts.push(new Uint8Array(local), nameB, data);
+      const cen = [].concat(
+        u32(0x02014b50),
+        u16(20),
+        u16(20),
+        u16(0),
+        u16(0),
+        u16(0),
+        u16(0),
+        u32(crc),
+        u32(data.length),
+        u32(data.length),
+        u16(nameB.length),
+        u16(0),
+        u16(0),
+        u16(0),
+        u16(0),
+        u32(0),
+        u32(offset),
+      );
+      central.push(new Uint8Array(cen), nameB);
+      offset += local.length + nameB.length + data.length;
+    });
+    let cenLen = 0;
+    central.forEach((c) => (cenLen += c.length));
+    const end = new Uint8Array(
+      [].concat(
+        u32(0x06054b50),
+        u16(0),
+        u16(0),
+        u16(files.length),
+        u16(files.length),
+        u32(cenLen),
+        u32(offset),
+        u16(0),
+      ),
+    );
+    const all = parts.concat(central, [end]);
+    let total = 0;
+    all.forEach((a) => (total += a.length));
+    const out = new Uint8Array(total);
+    let p = 0;
+    all.forEach((a) => {
+      out.set(a, p);
+      p += a.length;
+    });
+    return out;
+  }
+
+  const XL_STYLES =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    '<fonts count="3"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="16"/><name val="Calibri"/></font></fonts>' +
+    '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>' +
+    '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"/><right style="thin"/><top style="thin"/><bottom style="thin"/><diagonal/></border></borders>' +
+    '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+    '<cellXfs count="6">' +
+    '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+    '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0"/>' +
+    '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="center"/></xf>' +
+    '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>' +
+    '<xf numFmtId="0" fontId="1" fillId="0" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>' +
+    '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="right"/></xf>' +
+    "</cellXfs>" +
+    '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
+    "</styleSheet>";
+  // style indices: 0 plain · 1 bold · 2 title(center) · 3 bordered-wrap · 4 bordered-bold-center · 5 right
+
+  function xlSheet(rows, cols, merges) {
+    const rowsXml = rows
+      .map((row, r) => {
+        const cells = row
+          .map((cell, c) => {
+            if (cell == null) return "";
+            const ref = xlCol(c) + (r + 1);
+            const s = cell.s != null ? ' s="' + cell.s + '"' : "";
+            if (cell.v === "" || cell.v == null)
+              return '<c r="' + ref + '"' + s + "/>";
+            if (cell.n)
+              return '<c r="' + ref + '"' + s + "><v>" + cell.v + "</v></c>";
+            return (
+              '<c r="' +
+              ref +
+              '"' +
+              s +
+              ' t="inlineStr"><is><t xml:space="preserve">' +
+              xlEsc(cell.v) +
+              "</t></is></c>"
+            );
+          })
+          .join("");
+        return '<row r="' + (r + 1) + '">' + cells + "</row>";
+      })
+      .join("");
+    const colsXml = cols
+      ? "<cols>" +
+        cols
+          .map(
+            (w, i) =>
+              '<col min="' +
+              (i + 1) +
+              '" max="' +
+              (i + 1) +
+              '" width="' +
+              w +
+              '" customWidth="1"/>',
+          )
+          .join("") +
+        "</cols>"
+      : "";
+    const mergeXml =
+      merges && merges.length
+        ? '<mergeCells count="' +
+          merges.length +
+          '">' +
+          merges.map((m) => '<mergeCell ref="' + m + '"/>').join("") +
+          "</mergeCells>"
+        : "";
+    return (
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+      colsXml +
+      "<sheetData>" +
+      rowsXml +
+      "</sheetData>" +
+      mergeXml +
+      "</worksheet>"
+    );
+  }
+
+  function buildXlsx(sheets) {
+    const enc = new TextEncoder();
+    let ov = "";
+    for (let i = 1; i <= sheets.length; i++)
+      ov +=
+        '<Override PartName="/xl/worksheets/sheet' +
+        i +
+        '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>';
+    const ct =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+      ov +
+      '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>';
+    const rootRels =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>';
+    const sheetsXml = sheets
+      .map(
+        (s, i) =>
+          '<sheet name="' +
+          xlEsc(s.name) +
+          '" sheetId="' +
+          (i + 1) +
+          '" r:id="rId' +
+          (i + 1) +
+          '"/>',
+      )
+      .join("");
+    const wb =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' +
+      sheetsXml +
+      "</sheets></workbook>";
+    let rels = "";
+    for (let i = 1; i <= sheets.length; i++)
+      rels +=
+        '<Relationship Id="rId' +
+        i +
+        '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' +
+        i +
+        '.xml"/>';
+    rels +=
+      '<Relationship Id="rId' +
+      (sheets.length + 1) +
+      '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>';
+    const wbRels =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      rels +
+      "</Relationships>";
+    const files = [
+      { name: "[Content_Types].xml", data: enc.encode(ct) },
+      { name: "_rels/.rels", data: enc.encode(rootRels) },
+      { name: "xl/workbook.xml", data: enc.encode(wb) },
+      { name: "xl/_rels/workbook.xml.rels", data: enc.encode(wbRels) },
+      { name: "xl/styles.xml", data: enc.encode(XL_STYLES) },
+    ];
+    sheets.forEach((s, i) =>
+      files.push({
+        name: "xl/worksheets/sheet" + (i + 1) + ".xml",
+        data: enc.encode(xlSheet(s.rows, s.cols, s.merges)),
+      }),
+    );
+    return xlZip(files);
+  }
+
+  function visaDate(d) {
+    return (
+      d.getFullYear() +
+      "/" +
+      String(d.getMonth() + 1).padStart(2, "0") +
+      "/" +
+      String(d.getDate()).padStart(2, "0")
+    );
+  }
+
+  function buildExcelWorkbook() {
+    const s = window.__state;
+    const days = assembleItinDays(s);
+    const cur = toDate(TRIP_START);
+    const strip = (x) =>
+      String(x)
+        .replace(/<[^>]+>/g, "")
+        .replace(/&mdash;/g, "—")
+        .replace(/&amp;/g, "&")
+        .replace(/&rarr;/g, "→")
+        .replace(/&ndash;/g, "–")
+        .replace(/&[a-z]+\d*;/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+    const cell = (v, st) => ({ v: v, s: st });
+    const num = (v, st) => ({ v: v, n: true, s: st });
+    const accomFor = (d) =>
+      d.cityKey
+        ? s[d.cityKey].name +
+          " (" +
+          strip(ITIN_POOL[d.cityKey][0].cityTag).replace(/ .*/, "") +
+          ")"
+        : "—";
+
+    // --- Sheet 1: Itinerary (readable) ---
+    const itinRows = [
+      [
+        cell("Date", 1),
+        cell("Day", 1),
+        cell("Plan", 1),
+        cell("Accommodation", 1),
+        cell("Transport", 1),
+      ],
+    ];
+    days.forEach((d, i) => {
+      const date = fmtDate(addDays(cur, i));
+      const plan = VISA_PLAN[d.id] || strip(d.title);
+      const move = d.move
+        ? (function () {
+            const m = moveData(d.move, s);
+            return (
+              strip(m.lead) +
+              " — " +
+              strip(m.detail) +
+              (SHOW_PRICES && m.cost ? " ($" + fmt2(m.cost) + ")" : "")
+            );
+          })()
+        : "";
+      itinRows.push([
+        cell(date),
+        cell("Day " + (i + 1)),
+        cell(plan),
+        cell(d.cityKey ? s[d.cityKey].name : "—"),
+        cell(move),
+      ]);
+    });
+    const sheets = [
+      { name: "Itinerary", rows: itinRows, cols: [16, 8, 46, 30, 40] },
+    ];
+
+    // --- Optional Budget sheet (only when prices are shown) ---
+    if (SHOW_PRICES) {
+      const rows = buildRows();
+      const bud = [
+        [
+          cell("Date", 1),
+          cell("Category", 1),
+          cell("Item", 1),
+          cell("Detail", 1),
+          cell("Cost (USD)", 1),
+        ],
+      ];
+      rows.forEach((r) =>
+        bud.push([
+          cell(fmtDate(r.date)),
+          cell(r.category),
+          cell(r.title),
+          cell(r.detail),
+          num(Math.round(r.cost)),
+        ]),
+      );
+      bud.push([
+        cell(""),
+        cell("Lodging"),
+        cell("Taxes/fees buffer"),
+        cell("Applied to lodging subtotal"),
+        num(Math.round(s.lodgingBuffer)),
+      ]);
+      bud.push([
+        cell(""),
+        cell(""),
+        cell(""),
+        cell("TOTAL", 1),
+        num(Math.round(s.grand), 1),
+      ]);
+      sheets.push({ name: "Budget", rows: bud, cols: [16, 14, 30, 40, 14] });
+    }
+
+    // --- Final sheet: Japan MOFA "Travel Itinerary" visa form ---
+    const v = [];
+    v.push([]); // row 1 spacer
+    v.push([null, null, null, cell("(Year)      (Month)      (Day)", 5)]); // row 2, top-right
+    v.push([]); // row 3
+    v.push([cell("Travel Itinerary", 2)]); // row 4 title (merged A4:D4)
+    v.push([]); // row 5
+    v.push([
+      cell("The travel itinerary of the visa applicant(s) is as follows:"),
+    ]); // row 6
+    v.push([]); // row 7
+    v.push([
+      cell("Date", 4),
+      cell("Activity Plan", 4),
+      cell("Contact", 4),
+      cell("Accommodation", 4),
+    ]); // row 8 header
+    days.forEach((d, i) => {
+      v.push([
+        cell(visaDate(addDays(cur, i)), 3),
+        cell(VISA_PLAN[d.id] || strip(d.title), 3),
+        cell("", 3),
+        cell(d.cityKey ? s[d.cityKey].name : "Departing Japan", 3),
+      ]);
+    });
+    for (let k = 0; k < 3; k++)
+      v.push([cell("", 3), cell("", 3), cell("", 3), cell("", 3)]); // blank rows to fill
+    sheets.push({
+      name: "Visa Itinerary",
+      rows: v,
+      cols: [16, 52, 20, 30],
+      merges: ["A4:D4"],
+    });
+
+    return buildXlsx(sheets);
+  }
+
+  function downloadExcel() {
+    let embedded = false;
+    try {
+      embedded = window.self !== window.top;
+    } catch (e) {
+      embedded = true;
+    }
+    if (embedded) {
+      const hint = document.getElementById("pdfHint");
+      hint.textContent =
+        "Excel download is blocked inside this embedded preview. Open the itinerary at its own web address to download the .xlsx.";
+      hint.style.display = "";
+      return;
+    }
+    const data = buildExcelWorkbook();
+    const blob = new Blob([data], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "japan-trip-itinerary.xlsx";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   function showTab(t) {
     document
       .querySelectorAll(".tab")
@@ -3771,6 +4233,9 @@
           btn.classList.remove("copied");
         }, 1600);
       });
+    document
+      .getElementById("itinXlsxBtn")
+      .addEventListener("click", downloadExcel);
     // keep the itinerary in sync with every Plan-tab change
     document.addEventListener("change", renderItinerary);
     document
